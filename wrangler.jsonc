@@ -1,10 +1,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "btc-24h-online",
-  "compatibility_date": "2026-08-25",
-  "compatibility_flags": [
-    "nodejs_compat"
-  ],
+  "compatibility_date": "2026-05-15",
   "main": "vinext/server/fetch-handler",
   "assets": {
     "directory": "dist/client",
