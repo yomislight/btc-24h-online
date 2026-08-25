@@ -170,6 +170,7 @@ function buildForecasts(daily: DailyData | null, intel: IntelligenceData | null,
 
   return configs.map((config, scenarioIndex) => {
     let previous = price;
+    let previousWasUp = last.close >= last.open;
     const virtualCandles = Array.from({ length: horizon }, (_, index) => {
       const seed = last.time / seedStep + scenarioIndex * 71 + index * 13;
       const noise = (seededValue(seed) - .5) * m.atr14 * .34;
@@ -180,29 +181,33 @@ function buildForecasts(daily: DailyData | null, intel: IntelligenceData | null,
       const volume = m.averageVolume20 * (.72 + seededValue(seed + 17) * .45);
       const change = (close - open) / open * 100;
       const up = close >= open;
-      const stage = index === 0 ? '起始确认' : index < Math.ceil(horizon / 3) ? '前段试探' : index < Math.ceil(horizon * 2 / 3) ? '中段延续' : '末段确认';
       const trendPositive = price > m.sma30 && m.sma7 > m.sma30;
       const etfPositive = (intel?.etf.fiveDayTotal ?? 0) > 0;
       const volumeStrong = volume >= m.averageVolume20;
       const rsiHot = m.rsi14 > 72;
+      const volumeRatio = volume / m.averageVolume20;
+      const moveSize = Math.abs(change) < .45 ? '小' : Math.abs(change) < 1 ? '普通' : '较强';
       const drivers: ForecastCandle['drivers'] = [
-        { label: '趋势位置', detail: trendPositive ? `价格在30${intervalName(daily.interval)}均线上方，7${intervalName(daily.interval)}均线也保持领先` : `均线没有形成完整多头排列，方向仍需确认`, impact: trendPositive ? 'up' : 'neutral' },
-        { label: '动量约束', detail: rsiHot ? `RSI ${m.rsi14.toFixed(0)} 偏热，本根加入回踩与上影线压力` : `RSI ${m.rsi14.toFixed(0)} 未过热，动量仍可延续`, impact: rsiHot ? 'down' : 'up' },
-        { label: '资金方向', detail: etfPositive ? `ETF近5日净流入 ${flowLabel(intel?.etf.fiveDayTotal)}，为下方买盘提供支撑` : `ETF近5日没有净流入支撑，反弹持续性降低`, impact: etfPositive ? 'up' : 'down' },
-        { label: '量能确认', detail: `预计量能约为20${intervalName(daily.interval)}均量的 ${(volume / m.averageVolume20).toFixed(2)} 倍，${volumeStrong ? '足以确认本根方向' : '不足以确认突破'}`, impact: volumeStrong ? (up ? 'up' : 'down') : 'neutral' },
+        { label: up ? '我为什么偏向涨' : '我为什么偏向跌', detail: up ? (trendPositive ? `价格还在30${intervalName(daily.interval)}均线上面，7${intervalName(daily.interval)}均线也更高，短线趋势还没有走坏。` : `前一根回落后没有继续破低，我先按技术反弹看这一根。`) : (previousWasUp && rsiHot ? `前一根刚涨完，RSI已经到 ${m.rsi14.toFixed(0)}，短线获利盘容易先卖一部分。` : `价格往上推得不顺，买盘没有把上一根高点拿下来，容易先回踩。`), impact: up ? 'up' : 'down' },
+        { label: up ? '为什么只看小涨' : '这是不是转空', detail: up ? (rsiHot ? `这段已经涨得很快，RSI ${m.rsi14.toFixed(0)} 明显偏高，所以我只看${moveSize}阳线，不看连续大涨。` : `RSI ${m.rsi14.toFixed(0)} 还没有过热，上涨还有空间，但仍要看成交量。`) : (trendPositive ? `目前价格仍在30${intervalName(daily.interval)}均线上方，所以我把它看成回踩，不是趋势已经转空。` : `均线已经转弱，这次下跌需要更谨慎，不能只当普通回踩。`), impact: up ? (rsiHot ? 'down' : 'up') : (trendPositive ? 'neutral' : 'down') },
+        { label: '外部资金有没有接', detail: etfPositive ? `ETF近5日合计净流入 ${flowLabel(intel?.etf.fiveDayTotal)}，说明回落时仍可能有人接盘。` : `ETF近5日没有净流入，市场少了一块稳定买盘，反弹更容易停住。`, impact: etfPositive ? 'up' : 'down' },
+        { label: '成交量够不够', detail: `这根预计只有20${intervalName(daily.interval)}平均成交量的 ${volumeRatio.toFixed(2)} 倍。${volumeStrong ? `量够，${up ? '上涨' : '下跌'}更容易延续。` : `量不够，所以我不认为它能走出很大的${up ? '涨幅' : '跌幅'}。`}`, impact: volumeStrong ? (up ? 'up' : 'down') : 'neutral' },
       ];
-      const dominant = up ? (rsiHot && !volumeStrong ? '买盘仍占优，但过热和缩量限制涨幅' : '趋势与资金支撑高于回撤压力') : (etfPositive ? '短线获利回吐暂时压过资金支撑' : '弱量能与上方压力共同造成回撤');
+      const summary = up
+        ? `我把这根看成${moveSize}阳线。${trendPositive ? '趋势还在向上' : '前一根回落后有反弹需要'}${etfPositive ? '，ETF资金也还在流入' : ''}；${rsiHot ? '但现在涨得偏热' : '动量还不算拥挤'}，成交量又只有均量的 ${volumeRatio.toFixed(2)} 倍，所以只看小幅走高。`
+        : `我把这根看成${moveSize}阴线。${previousWasUp ? '前一根上涨后容易出现获利回吐' : '上方买盘没有继续跟进'}，${rsiHot ? `RSI ${m.rsi14.toFixed(0)} 也说明短线偏热` : '短线动量正在减弱'}；${trendPositive || etfPositive ? '不过趋势和资金支撑还在，所以更像回踩，不是直接转空。' : '同时缺少资金承接，需要防止回撤扩大。'}`;
       const confidence = Math.round(Math.max(51, Math.min(86, 58 + Math.abs(change) * 5 + (volumeStrong ? 7 : 0) - (rsiHot ? 4 : 0))));
       const candle: ForecastCandle = {
         time: addCandleTime(last.time, index + 1, daily.interval), open, close,
         high: Math.max(open, close) + wick,
         low: Math.min(open, close) - wick * (.8 + seededValue(seed + 11) * .35),
         volume, quoteVolume: 0, confidence,
-        summary: `${stage}：预计${up ? '收涨' : '收跌'} ${Math.abs(change).toFixed(2)}%。${dominant}。`,
+        summary,
         drivers,
-        confirm: up ? `收盘站稳 ${formatPrice(Math.max(open, previous))}，且量能不低于 ${(volume / m.averageVolume20).toFixed(2)} 倍均量` : `收盘跌破 ${formatPrice(Math.min(open, previous))}，卖压继续占优`,
-        invalidation: up ? `跌破本根低点 ${formatPrice(Math.min(open, close) - wick * .8)}，上涨判断失效` : `重新站上本根高点 ${formatPrice(Math.max(open, close) + wick)}，下跌判断失效`,
+        confirm: up ? `如果收盘能站稳 ${formatPrice(Math.max(open, previous))} 上方，而且成交量至少达到这根预计的 ${volumeRatio.toFixed(2)} 倍均量，我才认为上涨走出来了。` : `如果收盘真的跌破 ${formatPrice(Math.min(open, previous))}，我才认为这次回踩成立。`,
+        invalidation: up ? `如果价格反而跌破 ${formatPrice(Math.min(open, close) - wick * .8)}，说明买盘没有接住，这根看涨判断就是错的。` : `如果价格重新站上 ${formatPrice(Math.max(open, close) + wick)}，说明卖压没有延续，这根看跌判断就是错的。`,
       };
+      previousWasUp = up;
       previous = close;
       return candle;
     });
