@@ -97,17 +97,36 @@ npx @vinext/cloudflare deploy
 
 ## English
 
-### Overview
+### AI BTC Candlestick Forecasting System
 
-A multi-exchange BTC decision dashboard:
+BTC 24h ONLINE is not an automated trading bot or a simple price dashboard. It combines five-exchange market data, technical indicators, ETF flows, whale transactions, and derivatives data in one framework to model the probable direction of upcoming BTC candles.
 
-- **Live 5-exchange feed** — simultaneous WebSocket subscriptions to Coinbase, Binance, OKX, Bybit, and Hyperliquid, with a composite price, 24h change/high/low/volume, and automatic "stale" flagging after 15 seconds of silence.
-- **Multi-timeframe candles** — hourly / daily / monthly views, aggregated across all five exchanges into a single candle per time bucket (median open/close, max/min high/low, summed volume) to smooth out single-exchange noise.
-- **Technical indicators** — SMA7 / SMA30 / SMA200, RSI14, ATR14, 30-period high/low, and a 20-period volume ratio.
-- **Scenario forecasting** — base / breakout / pullback scenarios are generated from cross-exchange direction agreement, volume confirmation, moving-average structure, RSI, ETF flow, and funding rate. Each forecast candle ships with a plain-language rationale (why it moves, what would confirm it, what would invalidate it).
-- **On-chain & market intelligence** — Farside ETF flow data, mempool.space whale-transaction monitoring, and Binance funding rate / open interest.
+The system generates virtual future candles and explains each one individually: why it may move higher or lower, which data supports that view, what would confirm it, and which price level would invalidate it. Users can switch between hourly, daily, and monthly candles, with 3-day, 7-day, and 14-day forecast horizons.
 
-The forecast panel is explicitly labeled as probabilistic scenario analysis, not a live quote or investment advice.
+#### System Preview
+
+**AI candle projection with per-candle reasoning**
+
+![BTC 24h ONLINE AI candle forecast and per-candle analysis](docs/screenshots/dashboard-overview.png)
+
+**Live five-exchange market data and technical indicators**
+
+![Live BTC data from Coinbase Binance OKX Bybit and Hyperliquid](docs/screenshots/multi-exchange-market.png)
+
+**ETF, whale, derivatives, and volume monitoring**
+
+![BTC ETF whale derivatives and volume monitoring](docs/screenshots/market-intelligence.png)
+
+#### How the Forecast Is Built
+
+- **Live five-exchange feed** — simultaneous WebSocket subscriptions to Coinbase, Binance, OKX, Bybit, and Hyperliquid provide the composite price, 24-hour change, high, low, and volume. A feed is marked stale after 15 seconds without an update.
+- **Multi-timeframe candles** — hourly, daily, and monthly candles are aligned into shared time buckets across all five exchanges. Median open/close, maximum high, minimum low, and combined volume reduce the impact of abnormal data from any single venue.
+- **Technical indicators** — SMA7, SMA30, SMA200, RSI14, ATR14, 30-period highs/lows, and the 20-period volume ratio are used to evaluate trend, momentum, and typical volatility.
+- **Capital and market data** — Farside ETF net flows, mempool.space whale transactions, and Binance funding rate/open interest are included so the forecast is not based only on exchange price direction.
+- **Three forecast scenarios** — the system produces a base-range, upside-breakout, and pullback path, each with a probability, projected range, and invalidation level.
+- **Per-candle explanation** — every virtual candle includes plain-language reasoning covering candle structure, RSI, moving averages, volume, ETF flows, derivatives positioning, and cross-exchange agreement.
+
+> Virtual candles are probabilistic projections based on currently available data. They are not real future prices and do not constitute investment advice.
 
 ### Tech stack
 
