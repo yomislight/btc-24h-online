@@ -158,16 +158,34 @@ function buildForecasts(daily: DailyData | null, intel: IntelligenceData | null,
         : up
           ? (previousWasUp ? '上一根收高后还有惯性，这根继续抬高，但涨幅按波动率收窄。' : '上一根回落后没有继续向下推演，这根按技术反弹处理。')
           : (previousWasUp ? '上一根上涨后进入获利回吐，这根安排一次正常回踩。' : '上一根已经走低，买盘仍未扭转节奏，这根继续下探。');
+      const rsiImpact: 'up' | 'down' | 'neutral' = m.rsi14 > 72 ? 'down' : m.rsi14 < 32 ? 'up' : 'neutral';
+      const rsiDetail = m.rsi14 > 72
+        ? `RSI 14 为 ${m.rsi14.toFixed(1)}，已经进入明显过热区。${up ? '这会限制继续上冲的空间，所以不按大阳线推演。' : '获利盘容易松动，支持这根先回踩。'}`
+        : m.rsi14 < 32
+          ? `RSI 14 为 ${m.rsi14.toFixed(1)}，接近超卖。${up ? '空头动能衰减，有利于技术反弹。' : '继续追空的空间有限，需要防止快速反抽。'}`
+          : `RSI 14 为 ${m.rsi14.toFixed(1)}，处于中间区域，动量没有过度拥挤，本根主要由趋势和量能决定。`;
+      const funding = intel?.derivatives.fundingRate;
+      const longShort = intel?.derivatives.longShortRatio;
+      const leverageImpact: 'up' | 'down' | 'neutral' = funding != null && funding > .03 ? 'down' : funding != null && funding < -.01 ? 'up' : 'neutral';
+      const leverageDetail = funding == null
+        ? '衍生品数据暂未同步，这一项不参与本根方向加分。'
+        : funding > .03
+          ? `永续资金费率 ${funding.toFixed(4)}%，多头杠杆偏拥挤，价格上涨时更容易出现多头平仓回踩。`
+          : funding < -.01
+            ? `永续资金费率 ${funding.toFixed(4)}%，空头付费偏高，若价格上行可能触发空头回补。`
+            : `永续资金费率 ${funding.toFixed(4)}%，杠杆没有过热${longShort != null ? `；账户多空比 ${longShort.toFixed(3)}` : ''}，暂时没有明显的强平压力。`;
       const drivers: ForecastCandle['drivers'] = [
-        { label: up ? '这根为什么抬高' : '这根为什么压低', detail: stageReason, impact: up ? 'up' : 'down' },
-        { label: '五所现在是不是同方向', detail: `${exchangeLine}。${majorityUp ? '多数交易所正在往上走，给上涨推演加分。' : majorityDown ? '多数交易所正在往下走，给回落推演加分。' : '方向没有形成多数，所以这根只按小幅波动处理。'}${consensus.live < 5 ? ` 当前缺少 ${daily.failedSources.join('、')}，依据强度已下调。` : ''}`, impact: majorityUp ? 'up' : majorityDown ? 'down' : 'neutral' },
-        { label: '趋势有没有坏', detail: trendPositive ? `综合收盘仍在30${intervalName(daily.interval)}均线 ${formatPrice(m.sma30)} 上方，而且7${intervalName(daily.interval)}均线更高；${up ? '顺势抬高更合理。' : '因此这根下跌先看成回踩。'}` : `综合收盘与均线结构偏弱，${up ? '这根上涨只先看反弹。' : '这根下跌有趋势配合。'}`, impact: trendPositive ? 'up' : 'down' },
-        { label: '五所成交量有没有确认', detail: volumeDetail, impact: !volumeStrong ? 'neutral' : volumeAligned ? (up ? 'up' : 'down') : volumeOpposed ? (majorityUp ? 'up' : 'down') : 'neutral' },
-        { label: '外部资金有没有接', detail: etfPositive ? `ETF近5日合计净流入 ${flowLabel(intel?.etf.fiveDayTotal)}，回落时仍有中期资金承接。` : `ETF近5日没有净流入，少了一块稳定买盘，反弹更容易停住。`, impact: etfPositive ? 'up' : 'down' },
+        { label: up ? 'K线结构：为什么抬高' : 'K线结构：为什么压低', detail: `${stageReason} 本根预计波动约 ${Math.abs(change).toFixed(2)}%，低于当前 ATR ${formatPrice(m.atr14)} 所代表的常见波幅。`, impact: up ? 'up' : 'down' },
+        { label: 'RSI：动量是否过热', detail: rsiDetail, impact: rsiImpact },
+        { label: '均线：趋势有没有坏', detail: trendPositive ? `综合收盘仍在30${intervalName(daily.interval)}均线 ${formatPrice(m.sma30)} 上方，而且7${intervalName(daily.interval)}均线更高；${up ? '顺势抬高更合理。' : '因此这根下跌先看成回踩，不直接判定转空。'}` : `综合收盘与均线结构偏弱，${up ? '这根上涨只先看反弹。' : '这根下跌有趋势配合。'}`, impact: trendPositive ? 'up' : 'down' },
+        { label: '成交量：有没有真实配合', detail: volumeDetail, impact: !volumeStrong ? 'neutral' : volumeAligned ? (up ? 'up' : 'down') : volumeOpposed ? (majorityUp ? 'up' : 'down') : 'neutral' },
+        { label: 'ETF：机构资金有没有接', detail: etfPositive ? `ETF近5日合计净流入 ${flowLabel(intel?.etf.fiveDayTotal)}，说明中期资金仍在进场，回落时更容易出现承接。` : `ETF近5日为净流出 ${flowLabel(intel?.etf.fiveDayTotal)}，机构资金没有提供稳定承接，反弹持续性要打折。`, impact: etfPositive ? 'up' : 'down' },
+        { label: '衍生品：杠杆是否拥挤', detail: leverageDetail, impact: leverageImpact },
+        { label: '市场共振：交易所是否一致', detail: `${exchangeLine}。${majorityUp ? '多数市场同向上涨。' : majorityDown ? '多数市场同向下跌。' : '各市场方向分散，不能用单一交易所的波动下结论。'}${consensus.live < 5 ? ` 当前缺少 ${daily.failedSources.join('、')}，依据强度已下调。` : ''}`, impact: majorityUp ? 'up' : majorityDown ? 'down' : 'neutral' },
       ];
       const summary = up
-        ? `这根看${moveSize}阳线：${stageReason}${majorityUp ? ' 五所方向多数向上。' : ' 五所暂未形成向上多数，所以涨幅保守。'}${rsiHot ? ` RSI ${m.rsi14.toFixed(0)} 偏热，不按大阳线推演。` : ''}`
-        : `这根看${moveSize}阴线：${stageReason}${majorityDown ? ' 五所方向多数向下。' : trendPositive || etfPositive ? ' 但均线或资金支撑仍在，先看回踩，不看直接转空。' : ' 同时缺少资金承接，需要防回撤扩大。'}`;
+        ? `这根看${moveSize}阳线。均线趋势${trendPositive ? '仍向上' : '尚未转强'}，ETF资金${etfPositive ? '仍在流入' : '没有承接'}；${rsiHot ? `但 RSI ${m.rsi14.toFixed(0)} 已过热，` : ''}${volumeStrong && volumeAligned ? '成交量也有配合。' : '成交量尚未确认，所以涨幅保守。'}`
+        : `这根看${moveSize}阴线。${rsiHot ? `RSI ${m.rsi14.toFixed(0)} 过热，加上` : ''}${previousWasUp ? '前一根上涨后的获利回吐' : '短线动量减弱'}；${trendPositive || etfPositive ? '不过均线或ETF支撑还在，先看普通回踩，不直接判定转空。' : '资金与趋势都偏弱，需要防止回撤扩大。'}`;
       const agreement = consensus.live ? Math.abs(consensus.bullish - consensus.bearish) / consensus.live : 0;
       const confidence = Math.round(Math.max(48, Math.min(82, 50 + consensus.live / 5 * 9 + agreement * 16 + volumeBreadth * 6 - index * 1.2 - (rsiHot ? 3 : 0) - (consensus.spreadPct > .2 ? 3 : 0))));
       const candle: ForecastCandle = {
@@ -204,6 +222,7 @@ function buildForecasts(daily: DailyData | null, intel: IntelligenceData | null,
 function DailyChart({ candles, range, interval, forecast, selectedIndex, onSelect }: { candles: Candle[]; range: string; interval: CandleInterval; forecast?: Forecast; selectedIndex: number; onSelect: (index: number) => void }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const chartGeometry = useRef<{ rows: number; total: number; left: number; right: number } | null>(null);
+  const [hoveredCandle, setHoveredCandle] = useState<{ candle: ForecastCandle; x: number; y: number } | null>(null);
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -255,7 +274,16 @@ function DailyChart({ candles, range, interval, forecast, selectedIndex, onSelec
     const index = Math.round((localX - geometry.left) / slot) - geometry.rows;
     if (index >= 0 && index < futureLength) onSelect(index);
   };
-  return <div className="price-chart real-chart"><canvas ref={canvasRef} onClick={selectFromCanvas} aria-label={`${range} BTC真实与虚拟K线图，点击虚拟K线查看原因`} /></div>;
+  const hoverFromCanvas = (event: React.MouseEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current; const geometry = chartGeometry.current; const future = forecast?.virtualCandles ?? [];
+    if (!canvas || !geometry || !future.length) { setHoveredCandle(null); return; }
+    const rect = canvas.getBoundingClientRect(); const localX = event.clientX - rect.left;
+    const slot = (rect.width - geometry.left - geometry.right) / Math.max(1, geometry.total - 1);
+    const index = Math.round((localX - geometry.left) / slot) - geometry.rows;
+    if (index < 0 || index >= future.length) { setHoveredCandle(null); return; }
+    setHoveredCandle({ candle: future[index], x: Math.min(rect.width - 178, Math.max(8, localX + 12)), y: Math.max(8, event.clientY - rect.top - 82) });
+  };
+  return <div className="price-chart real-chart"><canvas ref={canvasRef} onClick={selectFromCanvas} onMouseMove={hoverFromCanvas} onMouseLeave={() => setHoveredCandle(null)} aria-label={`${range} BTC真实与虚拟K线图，点击虚拟K线查看原因，悬停查看具体价格`} />{hoveredCandle && <div className="chart-price-tooltip" style={{ left: hoveredCandle.x, top: hoveredCandle.y }}><time>{formatCandleTime(hoveredCandle.candle.time, interval)}</time><strong className={hoveredCandle.candle.close >= hoveredCandle.candle.open ? 'positive' : 'negative'}>收盘 {formatPrice(hoveredCandle.candle.close)}</strong><span>开盘 {formatPrice(hoveredCandle.candle.open)}</span><span>最高 {formatPrice(hoveredCandle.candle.high)} · 最低 {formatPrice(hoveredCandle.candle.low)}</span></div>}</div>;
 }
 
 export default function Home() {
