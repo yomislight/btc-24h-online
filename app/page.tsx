@@ -8,8 +8,12 @@ type CandleInterval = '1h' | '1d' | '1M';
 type MarketData = { price: number | null; change: number | null; high: number | null; low: number | null; volume: number | null; status: FeedStatus; updatedAt: number | null };
 type Candle = { time: number; open: number; high: number; low: number; close: number; volume: number; quoteVolume: number };
 type DailyData = {
-  status: 'live'; source: string; interval: CandleInterval; unit: 'hour' | 'day' | 'month'; updatedAt: number; candles: Candle[];
+  status: 'live'; source: string; sources: string[]; failedSources: string[]; interval: CandleInterval; unit: 'hour' | 'day' | 'month'; updatedAt: number; candles: Candle[];
   metrics: { dayChange: number; sevenDayChange: number; thirtyDayChange: number; sma7: number; sma30: number; sma200: number; rsi14: number; atr14: number; high30: number; low30: number; todayVolume: number; averageVolume20: number; volumeRatio: number };
+  consensus: {
+    requested: number; live: number; bullish: number; bearish: number; neutral: number; volumeConfirmCount: number; spreadPct: number;
+    exchanges: Array<{ name: string; marketType: 'spot' | 'perp'; close: number; change: number; volumeRatio: number; direction: 'up' | 'down' | 'flat' }>;
+  };
 };
 type IntelligenceData = {
   etf: { status: 'live' | 'snapshot'; source: string; sourceUrl: string; fiveDayTotal: number; latest: { date: string; total: number; funds: Record<string, number | null> } | null; recent: Array<{ date: string; total: number; funds: Record<string, number | null> }> };
@@ -17,7 +21,6 @@ type IntelligenceData = {
   whale: { status: 'live' | 'offline'; source: string; thresholdBtc: number; sampleSize: number; largeCount: number; largest: { txid: string; btc: number; feeRate: number } | null; checkedAt?: number };
   collectedAt: number;
 };
-type Advice = { score: number; label: string; bias: string; detail: string; points: Array<{ text: string; positive: boolean }>; allocation: string; invalidation: number | null };
 type ForecastScenario = 'base' | 'bull' | 'bear';
 type ForecastCandle = Candle & {
   confidence: number;
@@ -86,71 +89,23 @@ function addCandleTime(time: number, steps: number, interval: CandleInterval) {
   return Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + steps, 1);
 }
 
-function buildKlineReason(daily: DailyData | null, intel: IntelligenceData | null, price: number | null, direction?: string) {
-  if (!daily || !price) return '正在汇总趋势、动量、资金流和成交量，数据完整后会显示判断原因。';
-  const m = daily.metrics;
-  const unit = intervalName(daily.interval);
-  const trend = price > m.sma30 ? `价格站在30${unit}均线 ${formatPrice(m.sma30)} 上方，主要趋势仍偏强` : `价格跌到30${unit}均线 ${formatPrice(m.sma30)} 下方，趋势转弱`;
-  const momentum = m.rsi14 > 75 ? `但 RSI ${m.rsi14.toFixed(0)} 已明显过热，继续追涨容易出现回踩` : m.rsi14 < 35 ? `RSI ${m.rsi14.toFixed(0)} 接近超卖，存在技术反弹条件` : `RSI ${m.rsi14.toFixed(0)} 位于中性区，动量没有极端拥挤`;
-  const flow = (intel?.etf.fiveDayTotal ?? 0) > 0 ? `ETF近5日净流入 ${flowLabel(intel?.etf.fiveDayTotal)}，中期买盘仍有支撑` : `ETF近5日为净流出，机构资金暂未形成支撑`;
-  const volume = m.volumeRatio < .8 ? `当前量能只有20日均量的 ${m.volumeRatio.toFixed(2)} 倍，突破确认不足` : `当前量能达到20日均量的 ${m.volumeRatio.toFixed(2)} 倍，价格变化有成交支持`;
-  return `${trend}；${flow}；${momentum}；${volume}。因此模型把后续K线判断为“${direction ?? '震荡等待确认'}”。`;
-}
-
-function buildAdvice(mode: 'short' | 'long', daily: DailyData | null, intel: IntelligenceData | null, livePrice: number | null): Advice {
-  if (!daily) return { score: 50, label: '等待数据', bias: '计算中', detail: '日线、ETF与衍生品尚未同步', points: [{ text: '正在读取真实市场数据', positive: true }], allocation: '暂不操作', invalidation: null };
-  const m = daily.metrics;
-  const unit = intervalName(daily.interval);
-  const price = livePrice ?? daily.candles.at(-1)?.close ?? 0;
-  const etf = intel?.etf.fiveDayTotal;
-  const funding = intel?.derivatives.fundingRate;
-  let score = 50;
-  const points: Array<{ text: string; positive: boolean }> = [];
-
-  if (mode === 'long') {
-    if (price > m.sma200) { score += 14; points.push({ text: `价格在200${unit}均线上方（${formatPrice(m.sma200)}）`, positive: true }); }
-    else { score -= 16; points.push({ text: `价格跌破200${unit}均线（${formatPrice(m.sma200)}）`, positive: false }); }
-    if (m.sma7 > m.sma30) { score += 10; points.push({ text: `7${unit}均线高于30${unit}均线`, positive: true }); }
-    else { score -= 10; points.push({ text: `7${unit}均线低于30${unit}均线`, positive: false }); }
-    if (m.thirtyDayChange > 0) score += 7; else score -= 7;
-    if (m.rsi14 > 75) { score -= 12; points.push({ text: `RSI ${m.rsi14.toFixed(0)}，不适合一次性追买`, positive: false }); }
-    if (m.sevenDayChange > 20) score -= 8;
-  } else {
-    if (m.sevenDayChange > 0) { score += 10; points.push({ text: `近7${unit}上涨 ${m.sevenDayChange.toFixed(1)}%`, positive: true }); }
-    else { score -= 10; points.push({ text: `近7${unit}下跌 ${Math.abs(m.sevenDayChange).toFixed(1)}%`, positive: false }); }
-    if (price > m.sma30) score += 8; else score -= 8;
-    if (m.rsi14 > 72) { score -= 13; points.push({ text: `RSI ${m.rsi14.toFixed(0)}，短线偏热`, positive: false }); }
-    else if (m.rsi14 < 32) { score += 9; points.push({ text: `RSI ${m.rsi14.toFixed(0)}，接近超卖区`, positive: true }); }
-    else points.push({ text: `RSI ${m.rsi14.toFixed(0)}，未过热`, positive: true });
-  }
-  if (etf != null) {
-    if (etf > 500) { score += 10; points.push({ text: `ETF近5日净流入 ${flowLabel(etf)}`, positive: true }); }
-    else if (etf < 0) { score -= 10; points.push({ text: `ETF近5日净流出 ${flowLabel(etf)}`, positive: false }); }
-    else points.push({ text: `ETF近5日小幅净流入 ${flowLabel(etf)}`, positive: true });
-  }
-  if (funding != null && funding > 0.03) { score -= 8; points.push({ text: `资金费率 ${funding.toFixed(4)}%，多头拥挤`, positive: false }); }
-  else if (funding != null && points.length < 4) points.push({ text: `资金费率 ${funding.toFixed(4)}%，杠杆未过热`, positive: true });
-  score = Math.max(0, Math.min(100, Math.round(score)));
-  const label = score >= 72 ? '分批买入' : score >= 58 ? '继续持有' : score >= 43 ? '等待确认' : score >= 28 ? '逐步减仓' : '降低风险';
-  const allocation = score >= 72 ? (mode === 'long' ? '每次 10–15%' : '试仓 10%') : score >= 58 ? '持仓不追高' : score >= 43 ? '暂停加仓' : '减仓 20–30%';
-  const invalidation = price ? (score >= 58 ? Math.max(m.sma30, price - m.atr14 * 2) : Math.min(m.sma30, price + m.atr14)) : null;
-  return { score, label, bias: score >= 58 ? '偏多' : score < 43 ? '偏空' : '中性', detail: mode === 'long' ? `30${unit} ${signed(m.thirtyDayChange)} · RSI ${m.rsi14.toFixed(0)}` : `7${unit} ${signed(m.sevenDayChange)} · 量比 ${m.volumeRatio.toFixed(2)}`, points: points.slice(0, 4), allocation, invalidation };
-}
-
-function seededValue(seed: number) {
-  const value = Math.sin(seed * 12.9898) * 43758.5453;
-  return value - Math.floor(value);
-}
-
 function buildForecasts(daily: DailyData | null, intel: IntelligenceData | null, livePrice: number | null, horizon: number): Forecast[] {
   if (!daily || !daily.candles.length) return [];
   const m = daily.metrics;
+  const consensus = daily.consensus;
   const last = daily.candles.at(-1)!;
   const price = livePrice ?? last.close;
+  const breadth = consensus.live ? (consensus.bullish - consensus.bearish) / consensus.live : 0;
+  const volumeBreadth = consensus.live ? consensus.volumeConfirmCount / consensus.live : 0;
+  const volumeStrong = consensus.volumeConfirmCount >= Math.ceil(consensus.live * .6);
+  const majorityUp = consensus.bullish > consensus.bearish;
+  const majorityDown = consensus.bearish > consensus.bullish;
   let trend = 0;
   if (price > m.sma200) trend += .9; else trend -= .9;
   if (m.sma7 > m.sma30) trend += .7; else trend -= .7;
   if (m.thirtyDayChange > 0) trend += .35; else trend -= .35;
+  trend += breadth * 1.1;
+  if (consensus.volumeConfirmCount >= Math.ceil(consensus.live * .6)) trend += breadth >= 0 ? .35 : -.35;
   if ((intel?.etf.fiveDayTotal ?? 0) > 0) trend += .5; else if ((intel?.etf.fiveDayTotal ?? 0) < 0) trend -= .5;
   if (m.rsi14 > 75) trend -= 1;
   if (m.rsi14 < 30) trend += .7;
@@ -161,50 +116,68 @@ function buildForecasts(daily: DailyData | null, intel: IntelligenceData | null,
   const bearProbability = Math.round(Math.max(15, Math.min(42, 25 - trend * 6)));
   const baseProbability = 100 - bullProbability - bearProbability;
   const atrPct = Math.max(.012, Math.min(.06, m.atr14 / price));
-  const seedStep = daily.interval === '1h' ? 3_600_000 : 86_400_000;
   const configs: Array<{ scenario: ForecastScenario; label: string; probability: number; drift: number; direction: string }> = [
     { scenario: 'base', label: '基准震荡', probability: baseProbability, drift: Math.max(-.003, Math.min(.004, trend * .0012)), direction: trend >= 0 ? '高位震荡偏强' : '震荡偏弱' },
     { scenario: 'bull', label: '向上突破', probability: bullProbability, drift: atrPct * .24, direction: '突破后延续上行' },
     { scenario: 'bear', label: '回撤修正', probability: bearProbability, drift: -atrPct * .27, direction: '冲高后回撤' },
   ];
 
-  return configs.map((config, scenarioIndex) => {
+  return configs.map((config) => {
     let previous = price;
     let previousWasUp = last.close >= last.open;
     const virtualCandles = Array.from({ length: horizon }, (_, index) => {
-      const seed = last.time / seedStep + scenarioIndex * 71 + index * 13;
-      const noise = (seededValue(seed) - .5) * m.atr14 * .34;
-      const pulse = Math.sin((index + 1) * 1.8 + scenarioIndex) * m.atr14 * .08;
-      const open = previous + (seededValue(seed + 3) - .5) * m.atr14 * .10;
-      const close = Math.max(1, previous * (1 + config.drift) + noise + pulse);
-      const wick = m.atr14 * (.16 + seededValue(seed + 7) * .16);
-      const volume = m.averageVolume20 * (.72 + seededValue(seed + 17) * .45);
+      const basePhases = [.08, .03, -.10, .07, .04, -.08, .06];
+      const bullPhases = [.12, .10, -.04, .13, .08, -.03, .10];
+      const bearPhases = [-.12, -.09, .04, -.13, -.08, .03, -.10];
+      const phase = (config.scenario === 'bull' ? bullPhases : config.scenario === 'bear' ? bearPhases : basePhases)[index % 7];
+      const consensusPush = breadth * m.atr14 * .08;
+      const heatAdjustment = m.rsi14 > 72 && index % 3 === 2 ? -m.atr14 * .10 : m.rsi14 < 32 && index % 3 === 2 ? m.atr14 * .10 : 0;
+      const open = previous;
+      const close = Math.max(1, previous * (1 + config.drift) + m.atr14 * phase + consensusPush + heatAdjustment);
+      const wick = m.atr14 * (.18 + Math.min(.10, Math.abs(close - open) / Math.max(1, m.atr14) * .06));
+      const volumeRatio = Math.max(.70, Math.min(1.35, .70 + volumeBreadth * .32 + Math.abs(breadth) * .18 + Math.abs(phase) * .45));
+      const volume = m.averageVolume20 * volumeRatio;
       const change = (close - open) / open * 100;
       const up = close >= open;
       const trendPositive = price > m.sma30 && m.sma7 > m.sma30;
       const etfPositive = (intel?.etf.fiveDayTotal ?? 0) > 0;
-      const volumeStrong = volume >= m.averageVolume20;
       const rsiHot = m.rsi14 > 72;
-      const volumeRatio = volume / m.averageVolume20;
       const moveSize = Math.abs(change) < .45 ? '小' : Math.abs(change) < 1 ? '普通' : '较强';
+      const exchangeLine = `${consensus.live}所中，${consensus.bullish}所涨、${consensus.bearish}所跌、${consensus.neutral}所横盘`;
+      const volumeAligned = (up && majorityUp) || (!up && majorityDown);
+      const volumeOpposed = (up && majorityDown) || (!up && majorityUp);
+      const volumeDetail = !volumeStrong
+        ? `按当前K线进度折算，只有 ${consensus.volumeConfirmCount}/${consensus.live} 所达到各自近20根均量。量能没有形成多数，当前方向还不能靠成交量确认，这根只作为情景推演。`
+        : volumeAligned
+          ? `按当前K线进度折算，${consensus.volumeConfirmCount}/${consensus.live} 所达到各自近20根均量，而且多数方向与这根一致，${up ? '上推' : '下压'}有跨市场成交配合。`
+          : volumeOpposed
+            ? `虽然 ${consensus.volumeConfirmCount}/${consensus.live} 所达到各自近20根均量，但当前有量的一边是${majorityUp ? '上涨' : '下跌'}，并不支持这根${up ? '上涨' : '下跌'}；所以这里只按一次小幅${up ? '反弹' : '回踩'}处理。`
+            : `${consensus.volumeConfirmCount}/${consensus.live} 所达到各自近20根均量，但五所方向没有形成多数，量能暂时不能确认这根。`;
+      const stageReason = index === 0
+        ? (up ? '第一根先按当前方向延续，但不直接假设会加速。' : '第一根先消化眼前卖压，不把回落直接看成趋势反转。')
+        : up
+          ? (previousWasUp ? '上一根收高后还有惯性，这根继续抬高，但涨幅按波动率收窄。' : '上一根回落后没有继续向下推演，这根按技术反弹处理。')
+          : (previousWasUp ? '上一根上涨后进入获利回吐，这根安排一次正常回踩。' : '上一根已经走低，买盘仍未扭转节奏，这根继续下探。');
       const drivers: ForecastCandle['drivers'] = [
-        { label: up ? '我为什么偏向涨' : '我为什么偏向跌', detail: up ? (trendPositive ? `价格还在30${intervalName(daily.interval)}均线上面，7${intervalName(daily.interval)}均线也更高，短线趋势还没有走坏。` : `前一根回落后没有继续破低，我先按技术反弹看这一根。`) : (previousWasUp && rsiHot ? `前一根刚涨完，RSI已经到 ${m.rsi14.toFixed(0)}，短线获利盘容易先卖一部分。` : `价格往上推得不顺，买盘没有把上一根高点拿下来，容易先回踩。`), impact: up ? 'up' : 'down' },
-        { label: up ? '为什么只看小涨' : '这是不是转空', detail: up ? (rsiHot ? `这段已经涨得很快，RSI ${m.rsi14.toFixed(0)} 明显偏高，所以我只看${moveSize}阳线，不看连续大涨。` : `RSI ${m.rsi14.toFixed(0)} 还没有过热，上涨还有空间，但仍要看成交量。`) : (trendPositive ? `目前价格仍在30${intervalName(daily.interval)}均线上方，所以我把它看成回踩，不是趋势已经转空。` : `均线已经转弱，这次下跌需要更谨慎，不能只当普通回踩。`), impact: up ? (rsiHot ? 'down' : 'up') : (trendPositive ? 'neutral' : 'down') },
-        { label: '外部资金有没有接', detail: etfPositive ? `ETF近5日合计净流入 ${flowLabel(intel?.etf.fiveDayTotal)}，说明回落时仍可能有人接盘。` : `ETF近5日没有净流入，市场少了一块稳定买盘，反弹更容易停住。`, impact: etfPositive ? 'up' : 'down' },
-        { label: '成交量够不够', detail: `这根预计只有20${intervalName(daily.interval)}平均成交量的 ${volumeRatio.toFixed(2)} 倍。${volumeStrong ? `量够，${up ? '上涨' : '下跌'}更容易延续。` : `量不够，所以我不认为它能走出很大的${up ? '涨幅' : '跌幅'}。`}`, impact: volumeStrong ? (up ? 'up' : 'down') : 'neutral' },
+        { label: up ? '这根为什么抬高' : '这根为什么压低', detail: stageReason, impact: up ? 'up' : 'down' },
+        { label: '五所现在是不是同方向', detail: `${exchangeLine}。${majorityUp ? '多数交易所正在往上走，给上涨推演加分。' : majorityDown ? '多数交易所正在往下走，给回落推演加分。' : '方向没有形成多数，所以这根只按小幅波动处理。'}${consensus.live < 5 ? ` 当前缺少 ${daily.failedSources.join('、')}，依据强度已下调。` : ''}`, impact: majorityUp ? 'up' : majorityDown ? 'down' : 'neutral' },
+        { label: '趋势有没有坏', detail: trendPositive ? `综合收盘仍在30${intervalName(daily.interval)}均线 ${formatPrice(m.sma30)} 上方，而且7${intervalName(daily.interval)}均线更高；${up ? '顺势抬高更合理。' : '因此这根下跌先看成回踩。'}` : `综合收盘与均线结构偏弱，${up ? '这根上涨只先看反弹。' : '这根下跌有趋势配合。'}`, impact: trendPositive ? 'up' : 'down' },
+        { label: '五所成交量有没有确认', detail: volumeDetail, impact: !volumeStrong ? 'neutral' : volumeAligned ? (up ? 'up' : 'down') : volumeOpposed ? (majorityUp ? 'up' : 'down') : 'neutral' },
+        { label: '外部资金有没有接', detail: etfPositive ? `ETF近5日合计净流入 ${flowLabel(intel?.etf.fiveDayTotal)}，回落时仍有中期资金承接。` : `ETF近5日没有净流入，少了一块稳定买盘，反弹更容易停住。`, impact: etfPositive ? 'up' : 'down' },
       ];
       const summary = up
-        ? `我把这根看成${moveSize}阳线。${trendPositive ? '趋势还在向上' : '前一根回落后有反弹需要'}${etfPositive ? '，ETF资金也还在流入' : ''}；${rsiHot ? '但现在涨得偏热' : '动量还不算拥挤'}，成交量又只有均量的 ${volumeRatio.toFixed(2)} 倍，所以只看小幅走高。`
-        : `我把这根看成${moveSize}阴线。${previousWasUp ? '前一根上涨后容易出现获利回吐' : '上方买盘没有继续跟进'}，${rsiHot ? `RSI ${m.rsi14.toFixed(0)} 也说明短线偏热` : '短线动量正在减弱'}；${trendPositive || etfPositive ? '不过趋势和资金支撑还在，所以更像回踩，不是直接转空。' : '同时缺少资金承接，需要防止回撤扩大。'}`;
-      const confidence = Math.round(Math.max(51, Math.min(86, 58 + Math.abs(change) * 5 + (volumeStrong ? 7 : 0) - (rsiHot ? 4 : 0))));
+        ? `这根看${moveSize}阳线：${stageReason}${majorityUp ? ' 五所方向多数向上。' : ' 五所暂未形成向上多数，所以涨幅保守。'}${rsiHot ? ` RSI ${m.rsi14.toFixed(0)} 偏热，不按大阳线推演。` : ''}`
+        : `这根看${moveSize}阴线：${stageReason}${majorityDown ? ' 五所方向多数向下。' : trendPositive || etfPositive ? ' 但均线或资金支撑仍在，先看回踩，不看直接转空。' : ' 同时缺少资金承接，需要防回撤扩大。'}`;
+      const agreement = consensus.live ? Math.abs(consensus.bullish - consensus.bearish) / consensus.live : 0;
+      const confidence = Math.round(Math.max(48, Math.min(82, 50 + consensus.live / 5 * 9 + agreement * 16 + volumeBreadth * 6 - index * 1.2 - (rsiHot ? 3 : 0) - (consensus.spreadPct > .2 ? 3 : 0))));
       const candle: ForecastCandle = {
         time: addCandleTime(last.time, index + 1, daily.interval), open, close,
         high: Math.max(open, close) + wick,
-        low: Math.min(open, close) - wick * (.8 + seededValue(seed + 11) * .35),
+        low: Math.min(open, close) - wick * (index % 2 === 0 ? .9 : 1.05),
         volume, quoteVolume: 0, confidence,
         summary,
         drivers,
-        confirm: up ? `如果收盘能站稳 ${formatPrice(Math.max(open, previous))} 上方，而且成交量至少达到这根预计的 ${volumeRatio.toFixed(2)} 倍均量，我才认为上涨走出来了。` : `如果收盘真的跌破 ${formatPrice(Math.min(open, previous))}，我才认为这次回踩成立。`,
+        confirm: up ? `收盘站稳 ${formatPrice(open)} 上方，同时至少 ${Math.ceil(consensus.live * .6)} 所方向转涨，这根上涨才算确认。` : `收盘跌破 ${formatPrice(open)}，同时至少 ${Math.ceil(consensus.live * .6)} 所方向转跌，这根回落才算确认。`,
         invalidation: up ? `如果价格反而跌破 ${formatPrice(Math.min(open, close) - wick * .8)}，说明买盘没有接住，这根看涨判断就是错的。` : `如果价格重新站上 ${formatPrice(Math.max(open, close) + wick)}，说明卖压没有延续，这根看跌判断就是错的。`,
       };
       previousWasUp = up;
@@ -218,11 +191,11 @@ function buildForecasts(daily: DailyData | null, intel: IntelligenceData | null,
     return {
       ...config, expectedReturn, targetLow: Math.min(...lows), targetHigh: Math.max(...highs), invalidation, virtualCandles,
       reasons: [
+        { label: '五所方向', value: `${consensus.bullish}涨 / ${consensus.bearish}跌 / ${consensus.neutral}横盘`, tone: majorityUp ? 'positive' : majorityDown ? 'negative' : 'neutral' },
         { label: '趋势', value: price > m.sma200 && m.sma7 > m.sma30 ? '均线多头排列' : '均线仍有分歧', tone: price > m.sma200 && m.sma7 > m.sma30 ? 'positive' : 'neutral' },
         { label: '动量', value: `RSI ${m.rsi14.toFixed(0)}${m.rsi14 > 75 ? '，明显过热' : m.rsi14 < 35 ? '，接近超卖' : '，处于中段'}`, tone: m.rsi14 > 75 ? 'negative' : 'neutral' },
         { label: '资金', value: `ETF 5日 ${flowLabel(intel?.etf.fiveDayTotal)}`, tone: (intel?.etf.fiveDayTotal ?? 0) > 0 ? 'positive' : 'negative' },
-        { label: '杠杆', value: `资金费率 ${intel?.derivatives.fundingRate?.toFixed(4) ?? '—'}%`, tone: (intel?.derivatives.fundingRate ?? 0) > .03 ? 'negative' : 'neutral' },
-        { label: '波动', value: `ATR ${formatPrice(m.atr14)} · 量比 ${m.volumeRatio.toFixed(2)}`, tone: m.volumeRatio > 1 ? 'positive' : 'neutral' },
+        { label: '量能', value: `${consensus.volumeConfirmCount}/${consensus.live} 所达到均量`, tone: volumeStrong ? 'positive' : 'neutral' },
       ],
     };
   });
@@ -296,7 +269,7 @@ export default function Home() {
   const [forecastScenario, setForecastScenario] = useState<ForecastScenario>('base');
   const [forecastHorizon, setForecastHorizon] = useState(7);
   const [selectedCandleIndex, setSelectedCandleIndex] = useState(0);
-  const [now, setNow] = useState(Date.now());
+  const [now, setNow] = useState(0);
 
   useEffect(() => { const timer = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(timer); }, []);
   useEffect(() => {
@@ -317,7 +290,7 @@ export default function Home() {
     load(); const timer = setInterval(load, 60_000); return () => { stopped = true; clearInterval(timer); };
   }, []);
   useEffect(() => {
-    let stopped = false; setDaily(null);
+    let stopped = false;
     const load = async () => { try { const response = await fetch(`/api/daily?interval=${marketInterval}`, { cache: 'no-store' }); if (!response.ok) throw new Error(); const payload = await response.json(); if (!stopped) setDaily(payload); } catch {} };
     load(); const timer = setInterval(load, 60_000); return () => { stopped = true; clearInterval(timer); };
   }, [marketInterval]);
@@ -332,7 +305,7 @@ export default function Home() {
   const forecast = forecasts.find((item) => item.scenario === forecastScenario) ?? forecasts[0];
   const historyOptions = marketInterval === '1h' ? ['24H', '72H', '168H'] : marketInterval === '1M' ? ['12M', '36M', '60M'] : ['7D', '30D', '90D', '1Y'];
   const horizonOptions = marketInterval === '1h' ? [6, 12, 24] : marketInterval === '1M' ? [1, 3, 6] : [3, 7, 14];
-  const switchInterval = (interval: CandleInterval) => { setMarketInterval(interval); setRange(interval === '1h' ? '72H' : interval === '1M' ? '36M' : '30D'); setForecastHorizon(interval === '1h' ? 12 : interval === '1M' ? 3 : 7); setForecastScenario('base'); setSelectedCandleIndex(0); };
+  const switchInterval = (interval: CandleInterval) => { setDaily(null); setMarketInterval(interval); setRange(interval === '1h' ? '72H' : interval === '1M' ? '36M' : '30D'); setForecastHorizon(interval === '1h' ? 12 : interval === '1M' ? 3 : 7); setForecastScenario('base'); setSelectedCandleIndex(0); };
   const selectedCandle = forecast?.virtualCandles[Math.min(selectedCandleIndex, Math.max(0, (forecast?.virtualCandles.length ?? 1) - 1))];
   const etfRecent = intelligence?.etf.recent ?? []; const maxEtf = Math.max(1, ...etfRecent.map((row) => Math.abs(row.total)));
   const topEtfFunds = Object.entries(intelligence?.etf.latest?.funds ?? {}).filter((entry): entry is [string, number] => typeof entry[1] === 'number' && entry[1] !== 0).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1])).slice(0, 2);
@@ -353,10 +326,10 @@ export default function Home() {
         <div className="market-workspace">
           <div className="market-chart-column"><div className="chart-toolbar"><div className="timeframes">{historyOptions.map((item) => <button key={item} className={range === item ? 'active' : ''} onClick={() => setRange(item)}>{item}</button>)}</div><div className="chart-legend"><span className="dot orange" />真实收盘 <span className="dot purple" />虚拟K线 <span className="dot green" />成交量</div></div>
           {daily ? <DailyChart candles={daily.candles} range={range} interval={marketInterval} forecast={forecast} selectedIndex={selectedCandleIndex} onSelect={setSelectedCandleIndex} /> : <div className="chart-loading">正在读取{intervalName(marketInterval)}K数据…</div>}
-          {forecast && <div className="virtual-analysis-zone"><div className="virtual-analysis-title"><div><span className="eyebrow">逐根K线分析</span><b>点击每一根，右侧查看完整原因</b></div><span>{forecast.virtualCandles.length} 根 · {forecast.label}</span></div><div className="virtual-timeline" aria-label="虚拟K线精确时间">{forecast.virtualCandles.map((candle, index) => <button type="button" className={selectedCandleIndex === index ? 'active' : ''} key={candle.time} onClick={() => setSelectedCandleIndex(index)} aria-expanded={selectedCandleIndex === index}><time>{formatCandleTime(candle.time, marketInterval)}</time><div className="virtual-card-price"><b className={candle.close >= candle.open ? 'positive' : 'negative'}>{formatPrice(candle.close)}</b><em className={candle.close >= candle.open ? 'up' : 'down'}>{candle.close >= candle.open ? '走高' : '走低'} {candle.confidence}%</em></div><span>第{index + 1}根 · {candle.close >= candle.open ? '预计阳线' : '预计阴线'}</span><p>{candle.summary}</p></button>)}</div></div>}
+          {forecast && <div className="virtual-analysis-zone"><div className="virtual-analysis-title"><div><span className="eyebrow">逐根K线分析</span><b>点击每一根，右侧查看完整原因</b></div><span>{forecast.virtualCandles.length} 根 · {forecast.label}</span></div><div className="virtual-timeline" aria-label="虚拟K线精确时间">{forecast.virtualCandles.map((candle, index) => <button type="button" className={selectedCandleIndex === index ? 'active' : ''} key={candle.time} onClick={() => setSelectedCandleIndex(index)} aria-expanded={selectedCandleIndex === index}><time>{formatCandleTime(candle.time, marketInterval)}</time><div className="virtual-card-price"><b className={candle.close >= candle.open ? 'positive' : 'negative'}>{formatPrice(candle.close)}</b><em className={candle.close >= candle.open ? 'up' : 'down'}>{candle.close >= candle.open ? '走高' : '走低'} · 依据{candle.confidence}%</em></div><span>第{index + 1}根 · {candle.close >= candle.open ? '预计阳线' : '预计阴线'}</span><p>{candle.summary}</p></button>)}</div></div>}
           <div className="daily-source">{daily?.source ?? '市场数据'} · 原始K线 UTC · 预测时间 JST · 紫色区域为情景推演</div></div>
           {selectedCandle && <section className="candle-explanation candle-explanation-side" aria-live="polite">
-            <div className="candle-explanation-head"><div><span>第{selectedCandleIndex + 1}根虚拟K线 · {formatCandleTime(selectedCandle.time, marketInterval)}</span><h3>为什么判断这根{selectedCandle.close >= selectedCandle.open ? '走高' : '走低'}</h3></div><div className={`candle-verdict ${selectedCandle.close >= selectedCandle.open ? 'up' : 'down'}`}><b>{selectedCandle.close >= selectedCandle.open ? '预计上涨' : '预计下跌'}</b><span>置信度 {selectedCandle.confidence}%</span></div></div>
+            <div className="candle-explanation-head"><div><span>第{selectedCandleIndex + 1}根虚拟K线 · {formatCandleTime(selectedCandle.time, marketInterval)}</span><h3>为什么判断这根{selectedCandle.close >= selectedCandle.open ? '走高' : '走低'}</h3></div><div className={`candle-verdict ${selectedCandle.close >= selectedCandle.open ? 'up' : 'down'}`}><b>{selectedCandle.close >= selectedCandle.open ? '预计上涨' : '预计下跌'}</b><span>依据强度 {selectedCandle.confidence}%</span></div></div>
             <p className="candle-summary">{selectedCandle.summary}</p>
             <div className="candle-driver-grid">{selectedCandle.drivers.map((driver) => <article className={driver.impact} key={driver.label}><span>{driver.impact === 'up' ? '↑' : driver.impact === 'down' ? '↓' : '—'} {driver.label}</span><p>{driver.detail}</p></article>)}</div>
             <div className="candle-conditions"><div><span>需要看到什么才算确认</span><b>{selectedCandle.confirm}</b></div><div><span>什么情况说明判断错了</span><b>{selectedCandle.invalidation}</b></div></div>
@@ -367,7 +340,7 @@ export default function Home() {
       <section className="forecast-panel panel">
         <div className="forecast-header"><div><span className="eyebrow">{intervalName(marketInterval)}K预判系统</span><h2>{forecast?.direction ?? '等待数据'}</h2><p>未来K线是概率推演，不是真实报价；切换周期会重新计算原因</p></div><div className="forecast-controls"><div className="scenario-tabs">{forecasts.map((item) => <button key={item.scenario} className={forecastScenario === item.scenario ? 'active' : ''} onClick={() => { setForecastScenario(item.scenario); setSelectedCandleIndex(0); }}><b>{item.label}</b><span>{item.probability}%</span></button>)}</div><div className="horizon-tabs">{horizonOptions.map((value) => <button key={value} className={forecastHorizon === value ? 'active' : ''} onClick={() => { setForecastHorizon(value); setSelectedCandleIndex(0); }}>{value}{marketInterval === '1h' ? '小时' : marketInterval === '1M' ? '月' : '天'}</button>)}</div></div></div>
         {forecast && <div className="forecast-body"><div className="forecast-summary"><div className="forecast-direction"><span>预期变化</span><strong className={forecast.expectedReturn >= 0 ? 'positive' : 'negative'}>{signed(forecast.expectedReturn)}</strong><small>{forecast.label} · 概率 {forecast.probability}%</small></div><div><span>推演区间</span><b>{formatPrice(forecast.targetLow)} – {formatPrice(forecast.targetHigh)}</b></div><div><span>情景失效位</span><b>{formatPrice(forecast.invalidation)}</b></div></div><div className="reason-grid">{forecast.reasons.map((reason) => <article key={reason.label} className={reason.tone}><span>{reason.label}</span><b>{reason.value}</b></article>)}</div></div>}
-        <div className="forecast-note"><b>怎么看：</b>先看概率最高的基准情景；价格穿越失效位后，切换到另外两个情景重新判断。虚拟K线使用均线、RSI、ATR、成交量、ETF和资金费率计算。</div>
+        <div className="forecast-note"><b>怎么算：</b>五所K线先按同一时间合并，再看多数方向、各所量能、综合均线、RSI、ATR、ETF与资金费率。虚拟K线不再加入随机涨跌；“依据强度”表示当前数据是否一致，不代表未来命中率。</div>
       </section>
 
       <section className="exchange-panel panel nav-section" id="market"><div className="section-title"><div><span className="eyebrow">实时行情</span><h2>五所同步状态</h2></div><span className={`feed-count ${currentMarkets.length ? 'live' : 'offline'}`}>{currentMarkets.length}/{exchanges.length} 正常</span></div><div className="exchange-grid">{exchanges.map((exchange) => { const data = markets[exchange.id]; const fresh = Boolean(data.updatedAt && now - data.updatedAt < 15_000); return <article className="exchange-card" key={exchange.id}><div className="exchange-head"><span className={`exchange-logo ${exchange.color}`}>{exchange.mark}</span><div><b>{exchange.name}</b><span>{exchange.pair}</span></div><em className={fresh ? 'live' : 'offline'}><i />{fresh ? ageLabel(data.updatedAt, now) : data.status === 'connecting' ? '连接中' : '数据延迟'}</em></div><div className="exchange-price"><strong>{formatPrice(data.price)}</strong><span className={(data.change ?? 0) < 0 ? 'negative' : 'positive'}>{signed(data.change ?? undefined)}</span></div><div className="exchange-stats"><div><span>24h 高</span><b>{data.high == null ? '—' : formatPrice(data.high)}</b></div><div><span>24h 低</span><b>{data.low == null ? '—' : formatPrice(data.low)}</b></div><div><span>成交量</span><b>{formatVolume(data.volume)}</b></div></div></article>; })}</div></section>
